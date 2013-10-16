@@ -117,6 +117,7 @@ int (*hook_query_access)(), (*hook_query_result)();
 #endif
 int anonymize = 0;  /* 1 to enable anonymization of IP address in log file */
 int geoip = 0;      /* 1 to add GeoIP information to log file */
+char *geoip_path = NULL; /* specifies path to geo-IP database to use */
 
 /* a list of zonetypes. */
 const struct dstype *ds_types[] = {
@@ -193,7 +194,8 @@ static void NORETURN usage(int exitcode) {
 " -z enable anonymization of IP addresses in log file\n"
 #endif
 #ifndef NO_GEOIP
-" -g enable anonymization of IP addresses in log file\n"
+" -g enable geo-IP lookup of IP addresses to log file\n"
+" -G dbpath specify name of geo-IP database file to use (implies -g)\n"
 #endif
 " -d - dump all zones in BIND format to standard output and exit\n"
 "each zone specified using `name:type:file,file...'\n"
@@ -482,8 +484,11 @@ break;
 #endif
 #ifndef NO_GEOIP
     case 'g': geoip = 1; break;
+    case 'G': geoip = 1; geoip_path = optarg; break;
+
 #else
     case 'g':
+    case 'G':
       error(0, "geoip support is not compiled in");
 #endif
     case 'h': usage(0);
@@ -1077,7 +1082,7 @@ static void request(int fd) {
   if (!r)
     return;
   if (flog)
-    logreply(&pkt, flog, flushlog, anonymize, geoip, verbose);
+    logreply(&pkt, flog, flushlog, anonymize, geoip, geoip_path, verbose);
 
   /* finally, send a reply */
   while(sendto(fd, (void*)pkt.p_buf, r, 0,

@@ -998,7 +998,7 @@ static GeoIP* open_geoip_db(GeoIPDBTypes type)
 #endif
 
 void logreply(const struct dnspacket *pkt, FILE *flog, int flushlog,
-              int anonymize, int geoip_lookup, int verbose) {
+              int anonymize, int geoip_lookup, char* geoip_path, int verbose) {
   static const char sep = '\t';
   char cbuf[DNS_MAXDOMAIN + IPSIZE + 50];
   char *cp = cbuf;
@@ -1036,12 +1036,22 @@ void logreply(const struct dnspacket *pkt, FILE *flog, int flushlog,
 # endif
     if (! geoip_initialized) {
       geoip_initialized = 1;
-      geoip = open_geoip_db(GEOIP_CITY_EDITION_REV1);
+
+      if ( geoip_path != NULL ) {
+        geoip = GeoIP_open(geoip_path, GEOIP_MEMORY_CACHE);
+        if ( !geoip ) {
+          dslog(LOG_WARNING, 0, "could not open provided GeoIP database, falling back to builtins");
+        }
+      }
+
+      if ( !geoip )
+        geoip = open_geoip_db(GEOIP_CITY_EDITION_REV1);
       if (! geoip)
         geoip = open_geoip_db(GEOIP_CITY_EDITION_REV0);
-      if (geoip)
-        have_city_db = 1;
-      else {
+      if (geoip) {
+        if ( geoip->databaseType == GEOIP_CITY_EDITION_REV0 || geoip->databaseType == GEOIP_CITY_EDITION_REV1 ) 
+          have_city_db = 1;
+      } else {
         geoip = open_geoip_db(GEOIP_COUNTRY_EDITION);
         if (geoip)
           dslog(LOG_WARNING, 0, "fell back to GeoIP City/Country edition");
