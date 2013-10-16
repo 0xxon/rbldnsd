@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include "config.h"
 #include "ip4addr.h"
+#include "ip6addr.h"
 #include "dns.h"
 #include "mempool.h"
 
@@ -61,8 +62,10 @@ struct dnsqinfo {	/* qi */
   unsigned qi_tflag;			/* query RR type flag (NSQUERY_XX) */
   unsigned qi_dnlen0;			/* length of qi_dn - 1 */
   unsigned qi_dnlab;			/* number of labels in q_dn */
-  ip4addr_t qi_ip4;			/* parsed IP4 address */
   int qi_ip4valid;			/* true if qi_ip4 is valid */
+  int qi_ip6valid;			/* true if qi_ip6 is valid */
+  ip4addr_t qi_ip4;			/* parsed IP4 address */
+  ip6oct_t qi_ip6[IP6ADDR_FULL];	/* parsed IP6 address */
 };
 
 #define PACK32(b,n) ((b)[0]=(n)>>24,(b)[1]=(n)>>16,(b)[2]=(n)>>8,(b)[3]=(n))
@@ -140,6 +143,7 @@ struct dstype {	/* dst */
 
 /* dst_flags */
 #define DSTF_IP4REV	0x01	/* ip4 set */
+#define DSTF_IP6REV	0x02	/* ip6 set */
 #define DSTF_SPECIAL	0x08	/* special ds: non-recursive */
 
 #define declaredstype(t) extern const struct dstype dataset_##t##_type
@@ -160,6 +164,8 @@ struct dstype {	/* dst */
 declaredstype(ip4set);
 declaredstype(ip4tset);
 declaredstype(ip4trie);
+declaredstype(ip6tset);
+declaredstype(ip6trie);
 declaredstype(dnset);
 declaredstype(dnhash);
 declaredstype(generic);
@@ -316,6 +322,10 @@ void dump_ip4range(ip4addr_t a, ip4addr_t b, const char *rr,
 		   const struct dataset *ds, FILE *f);
 void dump_ip4(ip4addr_t a, const char *rr, const struct dataset *ds, FILE *f);
 void dumpzone(const struct zone *z, FILE *f);
+void dump_ip6(const ip6oct_t *addr, unsigned wild_nibbles, const char *rr,
+              const struct dataset *ds, FILE *f);
+void dump_ip6range(const ip6oct_t *beg, const ip6oct_t *end, const char *rr,
+                   const struct dataset *ds, FILE *f);
 #endif
 #define TXTBUFSIZ 260
 int txtsubst(char txtbuf[TXTBUFSIZ], const char *template,
@@ -416,26 +426,6 @@ int PRINTFLIKE(3, 4) ssprintf(char *buf, int bufsz, const char *fmt, ...);
        && strcmp((a).rr + 4, (b).rr + 4) == 0 \
       ) \
   )
-
-struct ip4trie_node {	/* IPv4 trie node */
-  ip4addr_t ip4t_prefix;		/* high bits of address prefix */
-  ip4addr_t ip4t_bits;			/* number of bits in prefix */
-  struct ip4trie_node *ip4t_right;	/* if (bit+1) bit is set, go here.. */
-  struct ip4trie_node *ip4t_left;	/* ..or else here. */
-  const char *ip4t_data;		/* data of the node if any */
-};
-
-struct ip4trie {
-  struct ip4trie_node *ip4t_root;	/* root node of the tree */
-  unsigned ip4t_nents;			/* number of entries so far */
-  unsigned ip4t_nnodes;			/* total number of nodes in tree */
-};
-
-const char *ip4trie_lookup(const struct ip4trie *trie, ip4addr_t q);
-
-struct ip4trie_node *
-ip4trie_addnode(struct ip4trie *trie, ip4addr_t prefix, unsigned bits,
-                struct mempool *mp);
 
 /* hooks from a DSO extensions */
 #ifndef NO_DSO

@@ -1,3 +1,66 @@
+rbldnsd (0.997a) unstable; urgency=low
+
+  * change the way how `make dist' behaves 
+    (no need for a temporary subdir anymore)
+  * fixed sed expression to determine version number, needed for *BSD
+
+ -- Michael Tokarev <mjt@tls.msk.ru>  Tue, 23 Jul 2013 20:32:28 +0400
+
+rbldnsd (0.997) unstable; urgency=low
+
+  [ Jeff Dairiki ]
+
+  * configure: add --enable-asserts option to enable compilation of
+    assertions; assertion checking is disabled by default
+
+  * tests/test_acl.py, tests/test_ip4trie.py: new, very basic, tests
+    for the acl and ip4trie datasets
+
+  * rbldnsd_acl.c, rbldnsd_ip4trie.c: allow zero-length "wildcard" IP4
+    CIDR prefixes
+
+  * rbldnsd_acl.c: add support for ip6 addresses in ACLs
+
+  * rbldnsd_util.c: delete the (now unused) ip4trie code
+
+  * rbldnsd_acl.c: use new LC-TBM trie implementation
+
+  * rbldnsd_ip4trie.c: use new LC-TBM trie implementation instead of
+    the previous ip4trie; this decreased the memory consumption of
+    this dataset by roughly a factor of three
+
+  * rbldnsd_ip6tset.c: use new dump_ip6()
+
+  * Makefile.in: add 'check' target to run btrie.c self-tests and new
+    python-driven tests
+
+  * feature: ip6trie - new dataset supports listing of arbitrary length
+    ip6 CIDRs, along with individual A/TXT values for each prefix
+
+  * rbldnsd_util.c(dump_ip6, dump_ip6range): new functions to support
+    zone dump of ip6 zones
+
+  * btrie.c: LC-TBM trie implementation; supports arbitrary length prefixes
+    in a memory- and cpu- efficient manner
+
+  * configure: add test for __SIZEOF_POINTER__ - define if the compiler
+    does not already do so
+
+  * configure: add test for byte sex - define WORDS_BIGENDIAN in config.h
+    on big-endian architectures
+
+  * ip6addr.c: add support for compressed ("::") ip6 address notation
+
+  * mempool.c: bug fix for a theoretically possible buffer overrun
+
+  [ Michael Tokarev ]
+
+  * feature: ip6tset - new dataset supports listing of ip6 /64 subnets and
+    the exclusion of /128 subnets; only supports a single A/TXT value for
+    the entire dataset
+
+ -- Michael Tokarev <mjt@corpit.ru>  Sat, 29 Jun 2013 12:02:54 +0400
+
 rbldnsd (0.996b) unstable; urgency=low
 
   * cleanup: #ifdefed dump_a_txt() properly so it will not be compiled

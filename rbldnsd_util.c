@@ -347,6 +347,94 @@ void dump_ip4range(ip4addr_t a, ip4addr_t b, const char *rr,
 
 }
 
+static inline unsigned
+ip6nibble(const ip6oct_t addr[IP6ADDR_FULL], unsigned i)
+{
+  ip6oct_t byte = addr[i / 2];
+  return (i % 2) ? (byte & 0xf) : (byte >> 4);
+}
+
+/* format DNS name for ip6 address (with some nibbles possibly wild-carded) */
+static const char *
+ip6name(const ip6oct_t *addr, unsigned wild_nibbles)
+{
+  static char hexdigits[] = "0123456789abcdef";
+  static char name[IP6ADDR_FULL * 4 + 2] = "*";
+  char *np = name + 1;
+  unsigned n = 32 - wild_nibbles;
+
+  /* don't write past end of buffer, even if passed invalid args */
+  if (n > 32) n = 32;
+  while (n-- > 0) {
+    *np++ = '.';
+    *np++ = hexdigits[ip6nibble(addr, n)];
+  }
+  *np = '\0';
+
+  return wild_nibbles ? name : name + 2;
+}
+
+/* dump an ip6 address, with some nibbles possible wild-carded */
+void
+dump_ip6(const ip6oct_t *addr, unsigned wild_nibbles, const char *rr,
+         const struct dataset *ds, FILE *f)
+{
+  const char *dns_name = ip6name(addr, wild_nibbles);
+  const char *ipsubst = NULL;
+
+  if (rr) {
+    /* careful: addr may point to a short array (e.g. IP6ADDR_HALF) */
+    ipsubst = ip6atos(addr, IP6ADDR_FULL - wild_nibbles / 2);
+  }
+  dump_a_txt(dns_name, rr, ipsubst, ds, f);
+}
+
+/* dump an ip6 address range.
+ *
+ * BEG is the first address in the range, END is one past the last
+ * address included in the range.  END = NULL means no end limit.
+ *
+ * NB: The semantics of END are different than for dump_ip4range!
+ */
+void
+dump_ip6range(const ip6oct_t *beg, const ip6oct_t *end, const char *rr,
+              const struct dataset *ds, FILE *f)
+{
+  ip6oct_t addr[IP6ADDR_FULL];
+
+  memcpy(addr, beg, IP6ADDR_FULL);
+  while (1) {
+    unsigned nwild, i;
+    unsigned maxwild = 32;
+    if (end) {
+      /* find first nibble of end which is greater than addr */
+      for (i = 0; i < 32; i++) {
+        if (ip6nibble(end, i) != ip6nibble(addr, i))
+          break;
+      }
+      if (i == 32 || ip6nibble(end, i) < ip6nibble(addr, i))
+        return;                   /* end <= addr */
+      /* we can only wildcard after this nibble */
+      maxwild = 31 - i;
+    }
+    /* can only wildcard nibbles where we're starting from zero */
+    for (nwild = 0; nwild < maxwild; nwild++)
+      if (ip6nibble(addr, 31 - nwild) != 0)
+        break;
+
+    dump_ip6(addr, nwild, rr, ds, f);
+
+    /* advance address to one past end of wildcarded range */
+    /* Increment right-most non-wildcarded nibble */
+    i = 15 -  nwild / 2;
+    addr[i] += (nwild % 2) ? 0x10 : 0x01;
+    while (addr[i] == 0) {      /* propagate carry */
+      if (i == 0) return;       /* wrapped */
+      addr[--i]++;
+    }
+  }
+}
+
 void
 dump_a_txt(const char *name, const char *rr,
            const char *subst, const struct dataset *ds, FILE *f) {
@@ -521,105 +609,4 @@ void zlog(int level, const struct zone *zone, const char *fmt, ...) {
   va_end(ap);
   dns_dntop(zone->z_dn, name, sizeof(name));
   dslog(level, 0, "zone %.70s: %s", name, buf);
-}
-
-/* ip4trie */
-
-/* test whenever first len high bits in p1 and p2 are equal */
-#define prefixmatch(p1, p2, len) ((((p1)^(p2))&ip4mask(len))?0:1)
-/* test whenether bit's number bit is set in prefix.
- * Most significant bit is bit 0, least significant - bit #31 */
-#define bitset(prefix, bit) ((prefix)&(0x80000000>>(bit)))
-
-/* create and initialize new node with a given prefix/bits */
-static struct ip4trie_node *
-createnode(ip4addr_t prefix, unsigned bits, struct mempool *mp) {
-  struct ip4trie_node *node = mp_talloc(mp, struct ip4trie_node);
-  if (!node)
-    return NULL;
-  node->ip4t_left = node->ip4t_right = NULL;
-  node->ip4t_data = NULL;
-  node->ip4t_prefix = prefix;
-  node->ip4t_bits = bits;
-  return node;
-}
-
-/* link node to either left or right of parent,
- * assuming both parent's links are NULL */
-static inline void
-linknode(struct ip4trie_node *parent, struct ip4trie_node *node) {
-  if (bitset(node->ip4t_prefix, parent->ip4t_bits))
-    parent->ip4t_right = node;
-  else
-    parent->ip4t_left = node;
-}
-
-struct ip4trie_node *
-ip4trie_addnode(struct ip4trie *trie, ip4addr_t prefix, unsigned bits,
-                struct mempool *mp) {
-  struct ip4trie_node *node, **last;
-
-  for(last = &trie->ip4t_root;
-      (node = *last) != NULL;
-      last = bitset(prefix, node->ip4t_bits) ?
-         &node->ip4t_right : &node->ip4t_left) {
-
-    if (node->ip4t_bits > bits ||
-       !prefixmatch(node->ip4t_prefix, prefix, node->ip4t_bits)) {
-      /* new node should be inserted before the given node */
-      struct ip4trie_node *newnode;
-
-      /* Find number of common (equal) bits */
-      ip4addr_t diff = (prefix ^ node->ip4t_prefix) & ip4mask(bits);
-      unsigned cbits;
-      if (!diff) /* no difference, all bits are the same */
-        cbits = bits;
-      else {
-        cbits = 0;
-        while((diff & ip4mask(cbits+1)) == 0)
-          ++cbits;
-      }
-      ++trie->ip4t_nnodes;
-      if (!(newnode = createnode(prefix & ip4mask(cbits), cbits, mp)))
-        return NULL;
-      linknode(newnode, node);
-      *last = newnode;
-      if (cbits == bits)
-        return newnode;
-      /* so we just inserted a glue node, now insert real one */
-      ++trie->ip4t_nnodes;
-      if (!(node = createnode(prefix, bits, mp)))
-          return NULL;
-      linknode(newnode, node);
-      return node;
-    }
-
-    /* node's prefix matches */
-    if (node->ip4t_bits == bits)/* if number of bits are the same too, */
-      return node;		/* ..we're found exactly the same prefix */
-
-  }
-
-  /* no more nodes, create simple new node */
-  ++trie->ip4t_nnodes;
-  if (!(node = createnode(prefix, bits, mp)))
-    return NULL;
-  *last = node;
-  return node;
-}
-
-const char *ip4trie_lookup(const struct ip4trie *trie, ip4addr_t q) {
-  const struct ip4trie_node *node = trie->ip4t_root;
-  const char *data = NULL;
-
-  while(node && prefixmatch(node->ip4t_prefix, q, node->ip4t_bits)) {
-    if (node->ip4t_data)
-      data = node->ip4t_data;
-    if (bitset(q, node->ip4t_bits))
-      node = node->ip4t_right;
-    else
-      node = node->ip4t_left;
-  }
-
-  return data;
 }

@@ -12,7 +12,7 @@ else
   exit 1
 fi
 
-options="ipv6 stats master_dump zlib dso anonymize geoip"
+options="ipv6 stats master_dump zlib dso asserts anonymize geoip"
 
 for opt in $options; do
   eval enable_$opt=
@@ -25,7 +25,7 @@ fi
 enable() {
   opt=`echo "$1" | sed 's/^--[^-]*-//'`
   case "$opt" in
-    ipv6|stats|master_dump|zlib|dso|anonymize|geoip) ;;
+    ipv6|stats|master_dump|zlib|dso|asserts|anonymize|geoip) ;;
     master-dump) opt=master_dump ;;
     *) echo "configure: unrecognized option \`$1'" >&2; exit 1;;
   esac
@@ -52,6 +52,7 @@ Optional features (all enabled by default if system supports a feature):
   master-dump - enable/disable master-format (bind) dump support (-d option)
   zlib - zlib support
   dso - dynamic extensions (using shared objects) -- disabled by default
+  asserts - enable/disable debugging assertions -- disabled by default
   anonymize - anonymize IP addresses in logfile
   geoip - GeoIP support
 EOF
@@ -71,8 +72,9 @@ cat >confdef.h <<EOF
 
 EOF
 
-VERSION=`sed -e 's/^[^(]*(\([^)]*\)).*/\1/' -e 1q debian/changelog`
-VERSION_DATE=`sed -n '/^ --/ { s/.*  ...,  \{0,1\}\([0-9]\{1,2\} ... [0-9]\{4\}\) .*/\1/p; q; }' debian/changelog`
+set -- $(sed -n -e '/[^0-9].* (.*)$/ { s/\(.*\) (\(.*\))$/\1 \2/p; q; }' NEWS)
+VERSION=$1; shift
+VERSION_DATE="$*"
 
 ac_msg "configure: $name"
 ac_result "$VERSION ($VERSION_DATE)"
@@ -116,6 +118,35 @@ EOF
   else
     echo "#define NO_LONG_LONG" >>confdef.h
   fi
+fi
+
+if ac_compile_run_v "whether C compiler defines __SIZEOF_POINTER__" <<EOF
+#include <stdio.h>
+int main() {
+#ifdef __SIZEOF_POINTER__
+  return 0;
+#else
+  printf("#define __SIZEOF_POINTER__ %d\n", sizeof(int *));
+  return 1;
+#endif
+}
+EOF
+then :
+else
+  cat conftest.out >>confdef.h
+fi
+
+if ac_verbose "byte order" "big-endian" "little-endian" \
+   ac_compile_run <<EOF
+int main() {
+  long one = 1;
+  if (*(char *)&one)
+    return 1; /* little-endian */
+  return 0;
+}
+EOF
+then
+  echo "#define WORDS_BIGENDIAN 1" >>confdef.h
 fi
 
 has_inline=
@@ -310,6 +341,9 @@ if [ n = "$enable_stats" ]; then
 fi
 if [ n = "$enable_master_dump" ]; then
   echo "#define NO_MASTER_DUMP	1	/* option disabled */" >>confdef.h
+fi
+if [ y != "$enable_asserts" ]; then
+  echo "#define NDEBUG		1	/* option disabled */" >>confdef.h
 fi
 
 if [ n = "$enable_anonymize" ]; then

@@ -1,4 +1,4 @@
-/* ip4trie dataset type: IP4 CIDR ranges with A and TXT values.
+/* ip6trie dataset type: IP6 CIDR ranges with A and TXT values.
  * Only one value per range allowed.
  */
 
@@ -13,13 +13,17 @@ struct dsdata {
   const char *def_rr;	/* default RR */
 };
 
-definedstype(ip4trie, DSTF_IP4REV, "set of (ip4cidr, value) pairs");
+definedstype(ip6trie, DSTF_IP6REV, "set of (ip6cidr, value) pairs");
 
-static void ds_ip4trie_reset(struct dsdata *dsd, int UNUSED unused_freeall) {
+static void
+ds_ip6trie_reset(struct dsdata *dsd, int UNUSED unused_freeall)
+{
   memset(dsd, 0, sizeof(*dsd));
 }
 
-static void ds_ip4trie_start(struct dataset *ds) {
+static void
+ds_ip6trie_start(struct dataset *ds)
+{
   struct dsdata *dsd = ds->ds_dsd;
 
   dsd->def_rr = def_rr;
@@ -28,17 +32,19 @@ static void ds_ip4trie_start(struct dataset *ds) {
 }
 
 static int
-ds_ip4trie_line(struct dataset *ds, char *s, struct dsctx *dsc) {
+ds_ip6trie_line(struct dataset *ds, char *s, struct dsctx *dsc)
+{
   struct dsdata *dsd = ds->ds_dsd;
-  ip4addr_t a;
-  btrie_oct_t addr_bytes[4];
-  int bits;
   const char *rr;
   unsigned rrl;
+  int bits, excl, non_zero_host;
+  ip6oct_t addr[IP6ADDR_FULL];
 
-  int not;
-
-  if (*s == ':') {
+  /* "::" can not be a valid start to a default RR setting ("invalid A
+   * RR") but it can be a valid beginning to an ip6 address
+   * (e.g. "::1")
+   */
+  if (*s == ':' && s[1] != ':') {
     if (!(rrl = parse_a_txt(s, &rr, def_rr, dsc)))
       return 1;
     if (!(dsd->def_rr = mp_dmemdup(ds->ds_mp, rr, rrl)))
@@ -46,46 +52,39 @@ ds_ip4trie_line(struct dataset *ds, char *s, struct dsctx *dsc) {
     return 1;
   }
 
-  if (*s == '!') {
-    not = 1;
-    ++s; SKIPSPACE(s);
+  excl = *s == '!';
+  if (excl) {
+    ++s;
+    SKIPSPACE(s);
   }
-  else
-    not = 0;
-  if ((bits = ip4cidr(s, &a, &s)) < 0 ||
-      (*s && !ISSPACE(*s) && !ISCOMMENT(*s) && *s != ':')) {
+
+  bits = ip6cidr(s, addr, &s);
+  if (bits < 0 || (*s && !ISSPACE(*s) && !ISCOMMENT(*s) && *s != ':')) {
     dswarn(dsc, "invalid address");
     return 1;
   }
-  if (accept_in_cidr)
-    a &= ip4mask(bits);
-  else if (a & ~ip4mask(bits)) {
+  non_zero_host = ip6mask(addr, addr, IP6ADDR_FULL, bits);
+  if (non_zero_host && !accept_in_cidr) {
     dswarn(dsc, "invalid range (non-zero host part)");
     return 1;
   }
-  if (dsc->dsc_ip4maxrange && dsc->dsc_ip4maxrange <= ~ip4mask(bits)) {
-    dswarn(dsc, "too large range (%u) ignored (%u max)",
-           ~ip4mask(bits) + 1, dsc->dsc_ip4maxrange);
-    return 1;
-  }
-  if (not)
-    rr = NULL;
-  else {
-    SKIPSPACE(s);
-    if (!*s || ISCOMMENT(*s))
-      rr = dsd->def_rr;
-    else if (!(rrl = parse_a_txt(s, &rr, dsd->def_rr, dsc)))
-      return 1;
-    else if (!(rr = mp_dmemdup(ds->ds_mp, rr, rrl)))
-      return 0;
-  }
 
-  ip4unpack(addr_bytes, a);
-  switch(btrie_add_prefix(dsd->btrie, addr_bytes, bits, rr)) {
+  SKIPSPACE(s);
+  if (excl)
+    rr = NULL;
+  else if (!*s || ISCOMMENT(*s))
+    rr = dsd->def_rr;
+  else if (!(rrl = parse_a_txt(s, &rr, dsd->def_rr, dsc)))
+    return 1;
+  else if (!(rr = mp_dmemdup(ds->ds_mp, rr, rrl)))
+    return 0;
+
+  switch(btrie_add_prefix(dsd->btrie, addr, bits, rr)) {
   case BTRIE_OKAY:
     return 1;
   case BTRIE_DUPLICATE_PREFIX:
-    dswarn(dsc, "duplicated entry for %s/%d", ip4atos(a), bits);
+    dswarn(dsc, "duplicated entry for %s/%d",
+           ip6atos(addr, IP6ADDR_FULL), bits);
     return 1;
   case BTRIE_ALLOC_FAILED:
   default:
@@ -93,41 +92,45 @@ ds_ip4trie_line(struct dataset *ds, char *s, struct dsctx *dsc) {
   }
 }
 
-static void ds_ip4trie_finish(struct dataset *ds, struct dsctx *dsc) {
+static void
+ds_ip6trie_finish(struct dataset *ds, struct dsctx *dsc)
+{
   dsloaded(dsc, "%s", btrie_stats(ds->ds_dsd->btrie));
 }
 
 static int
-ds_ip4trie_query(const struct dataset *ds, const struct dnsqinfo *qi,
-                 struct dnspacket *pkt) {
+ds_ip6trie_query(const struct dataset *ds, const struct dnsqinfo *qi,
+                 struct dnspacket *pkt)
+{
+  const char *subst = NULL;
   const char *rr;
-  btrie_oct_t addr_bytes[4];
 
-  if (!qi->qi_ip4valid) return 0;
+  if (!qi->qi_ip6valid) return 0;
   check_query_overwrites(qi);
 
-  ip4unpack(addr_bytes, qi->qi_ip4);
-  rr = btrie_lookup(ds->ds_dsd->btrie, addr_bytes, 32);
+  rr = btrie_lookup(ds->ds_dsd->btrie, qi->qi_ip6, 8 * IP6ADDR_FULL);
 
   if (!rr)
     return 0;
 
-  addrr_a_txt(pkt, qi->qi_tflag, rr,
-              qi->qi_tflag & NSQUERY_TXT ? ip4atos(qi->qi_ip4) : NULL, ds);
+  if (qi->qi_tflag & NSQUERY_TXT)
+    subst = ip6atos(qi->qi_ip6, IP6ADDR_FULL);
+  addrr_a_txt(pkt, qi->qi_tflag, rr, subst, ds);
   return NSQUERY_FOUND;
 }
 
 #ifndef NO_MASTER_DUMP
 
+/* routines to increment individual bits in ip6 addr: returns carry */
 static inline int
-increment_bit(ip4addr_t *addr, int bit)
+increment_bit(ip6oct_t *addr, int bit)
 {
-  ip4addr_t mask = (ip4addr_t)1 << (31 - bit);
-  if (*addr & mask) {
-    *addr &= ~mask;
+  ip6oct_t mask = 1 << (7 - bit % 8);
+  if (addr[bit / 8] & mask) {
+    addr[bit / 8] &= ~mask;
     return 1;
   } else {
-    *addr |= mask;
+    addr[bit / 8] |= mask;
     return 0;
   }
 }
@@ -136,11 +139,11 @@ struct dump_context {
   const struct dataset *ds;
   FILE *f;
 
-  ip4addr_t prev_addr;
+  ip6oct_t prev_addr[IP6ADDR_FULL];
   const char *prev_rr;
 
   /* Keep stack of data inherited from parent prefixes */
-  const void *parent_data[33];
+  const void *parent_data[IP6ADDR_FULL * 8 + 1];
   unsigned depth;
 };
 
@@ -149,12 +152,14 @@ dump_cb(const btrie_oct_t *prefix, unsigned len, const void *data, int post,
         void *user_data)
 {
   struct dump_context *ctx = user_data;
-  ip4addr_t addr;
+  unsigned nb = (len + 7) / 8;
+  ip6oct_t addr[IP6ADDR_FULL];
 
-  if (len > 32)
+  if (nb > IP6ADDR_FULL)
     return;                     /* paranoia */
-  addr = (prefix[0] << 24) + (prefix[1] << 16) + (prefix[2] << 8) + prefix[3];
-  addr &= len ? -((ip4addr_t)1 << (32 - len)) : 0;
+  /* pad prefix to full ip6 length */
+  memcpy(addr, prefix, nb);
+  memset(addr + nb, 0, IP6ADDR_FULL - nb);
 
   if (post == 0) {
     /* pre order visit (before child nodes are visited) */
@@ -168,7 +173,7 @@ dump_cb(const btrie_oct_t *prefix, unsigned len, const void *data, int post,
     unsigned carry_bits;
     /* increment address to one past the end of the current prefix */
     for (carry_bits = 0; carry_bits < len; carry_bits++)
-      if (increment_bit(&addr, len - 1 - carry_bits) == 0)
+      if (increment_bit(addr, len - 1 - carry_bits) == 0)
         break;                  /* no carry */
     if (carry_bits == len)
       return;                   /* wrapped - all done */
@@ -179,10 +184,10 @@ dump_cb(const btrie_oct_t *prefix, unsigned len, const void *data, int post,
   }
 
   if (data != ctx->prev_rr) {
-    if (addr != ctx->prev_addr) {
+    if (memcmp(addr, ctx->prev_addr, IP6ADDR_FULL) != 0) {
       if (ctx->prev_rr)
-        dump_ip4range(ctx->prev_addr, addr - 1, ctx->prev_rr, ctx->ds, ctx->f);
-      ctx->prev_addr = addr;
+        dump_ip6range(ctx->prev_addr, addr, ctx->prev_rr, ctx->ds, ctx->f);
+      memcpy(ctx->prev_addr, addr, IP6ADDR_FULL);
     }
     /* else addr unchanged => zero-length range, ignore */
     ctx->prev_rr = data;
@@ -191,7 +196,7 @@ dump_cb(const btrie_oct_t *prefix, unsigned len, const void *data, int post,
 }
 
 static void
-ds_ip4trie_dump(const struct dataset *ds,
+ds_ip6trie_dump(const struct dataset *ds,
                 const unsigned char UNUSED *unused_odn,
                 FILE *f)
 {
@@ -204,7 +209,7 @@ ds_ip4trie_dump(const struct dataset *ds,
 
   /* flush final range */
   if (ctx.prev_rr)
-    dump_ip4range(ctx.prev_addr, ip4mask(32), ctx.prev_rr, ds, f);
+    dump_ip6range(ctx.prev_addr, NULL, ctx.prev_rr, ds, f);
 }
 
 #endif
